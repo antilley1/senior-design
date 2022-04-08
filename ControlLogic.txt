@@ -1,0 +1,815 @@
+// THIS SKETCH INCLUDES THE LOGIC FOR THE 
+// AUTOMATIC SELF-BALANCING ZONING SYSTEM
+// UT TYLER FALL 2016/SPRING 2017
+// CODED BY: MARTIN ANTILLEY AND JUAN RICO
+// LOGIC BY: WYATT COOK AND MADISON WILSON
+// HARDWARE BY: GRAYSON COOK
+
+
+// Include both the Statistic and math languages used for the program
+// Eventually need to cite the authors, but both are public domain
+#include <Statistic.h>
+#include <math.h>
+
+//Defining what pins are being used for what purposes
+//These values must be set at installation
+//These pins need to be finalized with the realization
+//that 2 pins are needed 
+
+#define pin1 A1 //set equal to whatever pin the thermocouple for zone 1, TC1, went into
+#define pin2 A2 // repeat through 6
+#define pin3 A3
+#define pin4 A4
+#define pin5 A5
+#define pin6 A6
+#define pinP A8 //for the Pressure
+#define pinDT A7 //for duct temp
+#define opin1 23 //for output pins 
+#define opin2 25
+#define opin3 27
+#define opin4 29
+#define opin5 31
+#define opin6 33
+#define opinP 37
+#define opinDT 35
+
+#define dpin1 40
+#define dpin2 42
+#define dpin3 44
+#define dpin4 46
+#define dpin5 48
+#define dpin6 50
+#define closepin1 41
+#define closepin2 43
+#define closepin3 45
+#define closepin4 47
+#define closepin5 49
+#define closepin6 51
+
+// initialize variables, some defined in 'startup()'
+int NC; //Number of closed cases
+int NO; //Number of Open cases
+int FSD=1.2;  //Factor for Std Dev
+int PDON=-1; //Duct pressure that indicates the unit is on
+int DPT=1.5;  //Duct pressure threshold
+int FPT=1.1;  //Factor for DPT
+int N;    //number of zones, starts at 0, will be updated in logic
+int CSP=65;  //Cooling setpoint
+int HSP=85;  //Heating setpoint
+int P;
+int DT;
+double STDV;
+int UL;
+int LL;
+int Teq;
+
+int dtD=5000; //time dampers will move
+int dtT=5000; //time between temp measurements
+int b;
+int B;
+int B2;
+int B3;
+int B4;
+int A;
+int k;
+int lnTavg;
+int tavg;
+int Sxx;
+int Sxy;
+int Ttarget;
+
+
+//Create statistic arrays for each zone and the time statistic array
+Statistic zone1;
+Statistic zone2;
+Statistic zone3;
+Statistic zone4;
+Statistic zone5;
+Statistic zone6;
+Statistic times;
+
+//Create temp arrays for storing temps over time
+int T1[4];
+int T2[4];
+int T3[4];
+int T4[4];
+int T5[4];
+int T6[4];
+
+int t[6]; //stores times for each zone
+int DOP[6];
+int DPOS[6];
+int RO[6];
+int RC[6];
+
+int i; //iterations for loops
+
+
+
+// This is also where the loops that will create the zone temp/time arrays
+// and the zone temp stat arrays
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(9600);
+  pinMode(pin1,INPUT);pinMode(pin2,INPUT);pinMode(pin3,INPUT);pinMode(pin4,INPUT);pinMode(pin5,INPUT);pinMode(pin6,INPUT);pinMode(pinP,INPUT);pinMode(pinDT,INPUT);
+  //Defines pins as inputs
+  pinMode(opin1,OUTPUT);pinMode(opin2,OUTPUT);pinMode(opin3,OUTPUT);pinMode(opin4,OUTPUT);pinMode(opin5,OUTPUT);pinMode(opin6,OUTPUT);pinMode(opinP,OUTPUT); pinMode(opinDT,OUTPUT);
+  //Defines pins as outputs
+  zone1.clear(); zone2.clear(); zone3.clear(); zone4.clear(); zone5.clear(); zone6.clear();
+  //clears statistic arrays for each zone, just in case
+  }
+
+void loop() {
+  // This loop will correlate to the logic overview
+  // This loop will reference general blocks of logic
+  // shown in the function appendix
+  // This is done to simplify macro logic
+  // and bug test separate blocks of logic
+
+startup();
+
+//STANDBY LOOP
+while(P<PDON)
+{
+  delay(dtT);
+  P=analogRead(pinP);
+  P=Pconversion(P);
+}
+//END OF STANDBY LOOP
+
+firsttemps();
+
+//RUNNING LOOP
+while(P>PDON)
+{
+    DT=analogRead(pinDT);
+    DT=Tconversion(DT);
+    if(DT<=65)
+    {
+      coolinglogic();
+    }
+    if(DT>=90)
+    {
+      heatinglogic();
+    }
+    else
+    {
+      settostay();
+    }
+  checkdamperposition();
+  sendoperation();
+  delay(dtD);
+  settostay();
+  sendoperation();
+  delay(dtT);
+  modifytemps();
+  P=analogRead(pinP);
+  P=Pconversion(P);
+}
+//END OF RUNNING LOOP
+
+}
+//END OF 'loop()'
+
+
+//FUNCTION APPENDIX
+
+void startup()
+{
+  Serial.println("Startup");
+  NC=0;
+  NO=0;
+  FSD=1;  
+  N=0;
+  dtD=5000; //5 seconds
+  dtT=10000; //10 seconds
+  CSP=60; //degrees F
+  HSP=85; //degrees F
+  if(digitalRead(pin1)>10)
+  {N=N+1;}
+  if(digitalRead(pin2)>10)
+  {N=N+1;}
+  if(digitalRead(pin3)>10)
+  {N=N+1;}
+  if(digitalRead(pin4)>10)
+  {N=N+1;}
+  if(digitalRead(pin5)>10)
+  {N=N+1;}
+  if(digitalRead(pin6)>10)
+  {N=N+1;}
+  for (i=0; i<N; i=i+1)
+  {
+    DOP[i]=0;
+    DPOS[i]=61;
+  }
+  openalldampers();
+  P=0;
+  while(P<PDON)
+  {
+    delay(2000);
+    P=analogRead(pinP);
+    P=Pconversion(P);
+  }
+  delay(30000);
+  P=analogRead(pinP);
+  DPT=P*FPT;
+  
+}
+
+void openalldampers()
+{
+  Serial.println("Open All Dampers");
+  for(i=0; i<N; i=i+1)
+  {
+    DOP[i]=1;
+    RO[i]=1;
+    RC[i]=0;
+  }
+  sendoperation();
+  settostay();
+  sendoperation();
+}
+
+void sendoperation()
+{
+  Serial.println("Send Operation");
+  for(i=0; i<N; i=i+1)
+  {
+    if(DOP[i]=1)
+    {
+      opendamper(i);
+    }
+    if(DOP[i]=2)
+    {
+      closedamper(i);
+    }
+    else
+    {
+      staydampers(i);
+    }
+  }
+}
+
+void opendamper( int zonenumber)
+{
+  Serial.println("Open Damper");
+  if(zonenumber=0)
+  {
+    digitalWrite(dpin1,HIGH);
+  }
+  if(zonenumber=1)
+  {
+    digitalWrite(dpin2,HIGH);
+  }
+  if(zonenumber=2)
+  {
+    digitalWrite(dpin3,HIGH);
+  }
+  if(zonenumber=3)
+  {
+    digitalWrite(dpin4,HIGH);
+  }
+  if(zonenumber=4)
+  {
+    digitalWrite(dpin5,HIGH);
+  }
+  if(zonenumber=5)
+  {
+    digitalWrite(dpin6,HIGH);
+  }
+}
+
+void closedamper( int zonenumber)
+{
+  Serial.println("Close Damper");
+  if(zonenumber=0)
+  {
+    digitalWrite(closepin1,HIGH);
+  }
+  if(zonenumber=1)
+  {
+    digitalWrite(closepin2,HIGH);
+  }
+  if(zonenumber=2)
+  {
+    digitalWrite(closepin3,HIGH);
+  }
+  if(zonenumber=3)
+  {
+    digitalWrite(closepin4,HIGH);
+  }
+  if(zonenumber=4)
+  {
+    digitalWrite(closepin5,HIGH);
+  }
+  if(zonenumber=5)
+  {
+    digitalWrite(closepin6,HIGH);
+  }
+}
+
+void staydampers(int zone)
+{
+  Serial.println("Dampers Stay");
+  if(zone=0)
+  {
+    digitalWrite(dpin1,LOW);
+    digitalWrite(closepin1,LOW);
+  }
+  if(zone=1)
+  {
+    digitalWrite(dpin2,LOW);
+    digitalWrite(closepin2,LOW);
+  }
+  if(zone=2)
+  {
+    digitalWrite(dpin3,LOW);
+    digitalWrite(closepin3,LOW);
+  }
+  if(zone=3)
+  {
+    digitalWrite(dpin4,LOW);
+    digitalWrite(closepin4,LOW);
+  }
+  if(zone=4)
+  {
+    digitalWrite(dpin5,LOW);
+    digitalWrite(closepin5,LOW);
+  }
+  if(zone=5)
+  {
+    digitalWrite(dpin6,LOW);
+    digitalWrite(closepin6,LOW);
+  }
+
+}
+
+void firsttemps()
+{
+  Serial.println("First Temps");
+  for(i=0;i<4;i=i+1)
+  {
+    T1[i]=analogRead(pin1);
+    T1[i]=Tconversion(T1[i]);
+    zone1.add(T1[i]);
+    T2[i]=analogRead(pin2);
+    T2[i]=Tconversion(T2[i]);
+    zone2.add(T2[i]);
+    T3[i]=analogRead(pin3);
+    T3[i]=Tconversion(T3[i]);
+    zone3.add(T3[i]);
+    T4[i]=analogRead(pin4);
+    T4[i]=Tconversion(T4[i]);
+    zone4.add(T4[i]);
+    T5[i]=analogRead(pin5);
+    T5[i]=Tconversion(T5[i]);
+    zone5.add(T5[i]);
+    T6[i]=analogRead(pin6);
+    T6[i]=Tconversion(T6[i]);
+    zone6.add(T6[i]);
+    delay(dtT);
+  }
+}
+
+void modifytemps()
+{
+  Serial.println("Modify Temps");
+    zone1.clear(); zone2.clear(); zone3.clear(); zone4.clear(); zone5.clear(); zone6.clear();
+  for(i=0; i<4; i=i+1)
+  {
+    T1[i]=T1[i+1];
+    T2[i]=T2[i+1];
+    T3[i]=T3[i+1];
+    T4[i]=T4[i+1];
+    T5[i]=T5[i+1];
+    T6[i]=T6[i+1];
+  }
+  T1[4]=analogRead(pin1);
+  T1[4]=Tconversion(T1[4]);
+  zone1.add(T1[0]);
+  zone1.add(T1[1]);
+  zone1.add(T1[2]);
+  zone1.add(T1[3]);
+  T2[4]=analogRead(pin2);
+  T2[4]=Tconversion(T2[4]);
+  zone2.add(T2[0]);
+  zone2.add(T2[1]);
+  zone2.add(T2[2]);
+  zone2.add(T2[3]);
+  T3[4]=analogRead(pin3);
+  T3[4]=Tconversion(T3[4]);
+  zone3.add(T3[0]);
+  zone3.add(T3[1]);
+  zone3.add(T3[2]);
+  zone3.add(T3[3]);
+  T4[4]=analogRead(pin4);
+  T4[4]=Tconversion(T4[4]);
+  zone4.add(T4[0]);
+  zone4.add(T4[1]);
+  zone4.add(T4[2]);
+  zone4.add(T4[3]);
+  T5[4]=analogRead(pin5);
+  T5[4]=Tconversion(T5[4]);
+  zone5.add(T5[0]);
+  zone5.add(T5[1]);
+  zone5.add(T5[2]);
+  zone5.add(T5[3]);
+  T6[4]=analogRead(pin6);
+  T6[4]=Tconversion(T6[4]);
+  zone6.add(T6[0]);
+  zone6.add(T6[1]);
+  zone6.add(T6[2]);
+  zone6.add(T6[3]);
+}
+
+
+
+void settostay()
+{
+  Serial.println("Set dampers to stay");
+  for(i=0;i<N;i=i+1)
+  {
+    DOP[i]=0;
+  }
+}
+
+void determinedamperop()
+{
+  Serial.println("Determine Damper Operation");
+  for(i=0;i<N;i=i+1)
+  {
+    if(t[i]<=UL and t[i]>=LL)
+    {
+      DOP[i]=0;
+    }
+    if(t[i]>UL)
+    {
+      DOP[i]=1;
+      NO=NO+1;
+    }
+    else
+    {
+      NC=NC+1;
+      DOP[i]=2;
+    }
+  }
+}
+
+void checkdamperposition()
+{
+  Serial.println("Check Damper Postion");
+  for(i=0;i<N;i=i+1)
+  {
+    if(DOP[i]!=0)
+    {
+      if(DOP[i]=1)
+      {
+        if(DPOS[i]>=60+dtD)
+        {
+          DOP[i]=0;
+          DPOS[i]=60;
+          RO[i]=1;
+        }
+        if(RO[i]=1)
+        {
+          DOP[i]=0;
+        }
+        else
+        {
+          DPOS[i]=DPOS[i]+dtD;
+          RC[i]=0;
+        }
+      }
+      if(DPOS<=0-dtD)
+      {
+        DOP[i]=0;
+        DPOS[i]=0;
+        RC[i]=1;
+      }
+      if(RC[i]=1)
+      {
+        DOP[i]=0;
+      }
+      else
+      {
+        DPOS[i]=DPOS[i]-dtD;
+        RO[i]=0;
+      }
+    }    
+  }
+}
+
+void timetolowband()
+{
+  Serial.println("Time to Low Band");
+  Ttarget=CSP;
+  Teq=65;
+  b=5;
+  tavg=(b+b*2+b*3)/4;
+  Sxx=(b^2+(2*b)^2+(3*b)^2)/4;
+  Sxx=Sxx-tavg^2;
+
+  B=T1[0]-Teq;
+  B2=T1[1]-Teq;
+  B3=T1[2]-Teq;
+  B4=T1[3]-Teq;
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[0]=log(Ttarget/A)/k;
+  times.add(t[0]);
+
+  B=T2[0]-Teq;
+  B2=T2[1]-Teq;
+  B3=T2[2]-Teq;
+  B4=T2[3]-Teq;
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[1]=log(Ttarget/A)/k;
+  times.add(t[1]);
+
+  if(N>2){
+
+  B=T3[0]-Teq;
+  B2=T3[1]-Teq;
+  B3=T3[2]-Teq;
+  B4=T3[3]-Teq;
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[2]=log(Ttarget/A)/k;
+  times.add(t[2]);
+
+  }
+
+  if(N>3){
+ 
+  B=T4[0]-Teq;
+  B2=T4[1]-Teq;
+  B3=T4[2]-Teq;
+  B4=T4[3]-Teq;
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[3]=log(Ttarget/A)/k;
+  times.add(t[3]);
+
+  }
+
+  if(N>4)
+  {
+
+  B=T5[0]-Teq;
+  B2=T5[1]-Teq;
+  B3=T5[2]-Teq;
+  B4=T5[3]-Teq;
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[4]=log(Ttarget/A)/k;
+  times.add(t[4]);
+
+  }
+
+  if(N>5)
+  {
+  
+
+  B=T6[0]-Teq;
+  B2=T6[1]-Teq;
+  B3=T6[2]-Teq;
+  B4=T6[3]-Teq;
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[5]=log(Ttarget/A)/k;
+  times.add(t[5]);
+
+  }
+  
+}
+
+void timetohighband()
+{
+  Serial.println("Time to High Band");
+  Ttarget=HSP;
+  Teq=110;
+  b=5;
+  tavg=(b+b*2+b*3)/4;
+  Sxx=(b^2+(2*b)^2+(3*b)^2)/4;
+  Sxx=Sxx-tavg^2;
+
+  B=Teq-T1[0];
+  B2=Teq-T1[1];
+  B3=Teq-T1[2];
+  B4=Teq-T1[3];
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[0]=log(Ttarget/A)/k;
+  times.add(t[0]);
+
+  B=Teq-T2[0];
+  B2=Teq-T2[1];
+  B3=Teq-T2[2];
+  B4=Teq-T2[3];
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[1]=log(Ttarget/A)/k;
+  times.add(t[1]);
+
+  if(N>2){
+
+  B=Teq-T3[0];
+  B2=Teq-T3[1];
+  B3=Teq-T3[2];
+  B4=Teq-T3[3];
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[2]=log(Ttarget/A)/k;
+  times.add(t[2]);
+
+  }
+
+  if(N>3){
+ 
+  B=Teq-T4[0];
+  B2=Teq-T4[1];
+  B3=Teq-T4[2];
+  B4=Teq-T4[3];
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[3]=log(Ttarget/A)/k;
+  times.add(t[3]);
+
+  }
+
+  if(N>4)
+  {
+
+  B=Teq-T5[0];
+  B2=Teq-T5[1];
+  B3=Teq-T5[2];
+  B4=Teq-T5[3];
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[4]=log(Ttarget/A)/k;
+  times.add(t[4]);
+
+  }
+
+  if(N>5)
+  {
+  
+
+  B=Teq-T6[0];
+  B2=Teq-T6[1];
+  B3=Teq-T6[2];
+  B4=Teq-T6[3];
+  lnTavg=log(B)+log(B2)+log(B3)+log(B4);
+  lnTavg=lnTavg/4;
+  Sxy=b*log(B2)+2*b*log(B3)+3*b*log(B4);
+  Sxy=Sxy-tavg*lnTavg;
+  k=Sxy/exp(Sxx);
+  A=exp(lnTavg-tavg*log(k));
+  t[5]=log(Ttarget/A)/k;
+  times.add(t[5]);
+
+  }
+  
+}
+
+
+int Tconversion(int temp)
+{
+  Serial.println("T conversion");
+  int c1=.001036;
+  int c2=.0002516;
+  int Rt1=10000*(1023/temp-1);
+  int logRt1=log(Rt1);
+  int T=1/(c1+c2*logRt1);
+  temp=(T*9)/5+32;
+  return temp;
+}
+
+int Pconversion(int pressure)
+{
+  Serial.println("P conversion");
+  pressure=2*(pressure-163)/(812-163);
+  return pressure;
+}
+
+void coolinglogic()
+{
+  Serial.println("Cooling Logic");
+  timetolowband();
+  STDV=times.unbiased_stdev();
+  STDV=STDV*FSD;
+  LL=tavg-STDV;
+  UL=tavg+STDV;
+  NO=0;
+  NC=0;
+  determinedamperop();
+  checkspecial();
+}
+
+void heatinglogic()
+{
+  Serial.println("Heating Logic");
+  timetohighband();
+  STDV=times.unbiased_stdev();
+  STDV=STDV*FSD;
+  LL=tavg-STDV;
+  UL=tavg+STDV;
+  NO=0;
+  NC=0;
+  determinedamperop();
+  checkspecial();
+}
+
+void checkspecial()
+{
+  Serial.println("Check Special");
+  if(P>DPT)
+  {
+    if(NC>=1)
+    {
+      closetostay();
+      if(NO<1)
+      {
+        openhighest();
+      }
+    }
+    else
+    {
+      if(NO<1)
+      {
+        openhighest();
+      }
+    }
+  }
+}
+
+void closetostay()
+{
+  Serial.println("Close to Stay");
+  for(i=0;i<N;i=i+1)
+  {
+    if(DOP[i]=2)
+    {
+      DOP[i]=0;
+    }
+  }
+}
+
+void openhighest()
+{
+  Serial.println("Open Highest");
+  for(i=0;i<N;i=i+1)
+  {
+    if(t[i]=times.maximum())
+    {
+      DOP[i]=1;
+    }
+  }
+}
+
